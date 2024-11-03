@@ -21,7 +21,7 @@ error() {
 
 # 检查root权限
 check_root() {
-    if [ "$EUID" -ne 0 ]; then 
+    if [ "$EUID" -ne 0 ]; then
         error "请以root权限运行此脚本"
         exit 1
     fi
@@ -49,16 +49,16 @@ validate_port() {
 # 检查端口是否被占用
 check_port() {
     local port=$1
-    if netstat -tuln | grep -q ":$port "; then
+    if ss -tuln | grep -q ":$port "; then
         while true; do
             warn "端口 $port 已被使用"
             echo -n "是否继续? [y/N]: "
             read answer
             case $answer in
-                [Yy]* ) return 0;;
-                [Nn]* ) return 1;;
-                "" ) return 1;;
-                * ) echo "请输入 y 或 n";;
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+            "") return 1 ;;
+            *) echo "请输入 y 或 n" ;;
             esac
         done
     fi
@@ -164,23 +164,23 @@ check_rule_conflict() {
                             echo -n "是否覆盖? [y/N]: "
                             read answer
                             case $answer in
-                                [Yy]* ) 
-                                    iptables -t nat -D PREROUTING -i "$existing_interface" -p "$existing_protocol" --dport "$existing_port_range" -j REDIRECT --to-ports "$existing_target_port"
-                                    info "已删除冲突的规则"
-                                    return 0
-                                    ;;
-                                [Nn]*|"" ) 
-                                    info "操作已取消"
-                                    exit 1
-                                    ;;
-                                * ) echo "请输入 y 或 n";;
+                            [Yy]*)
+                                iptables -t nat -D PREROUTING -i "$existing_interface" -p "$existing_protocol" --dport "$existing_port_range" -j REDIRECT --to-ports "$existing_target_port"
+                                info "已删除冲突的规则"
+                                return 0
+                                ;;
+                            [Nn]* | "")
+                                info "操作已取消"
+                                exit 1
+                                ;;
+                            *) echo "请输入 y 或 n" ;;
                             esac
                         done
                     fi
                 fi
             done
         fi
-    done <<< "$existing_rules"
+    done <<<"$existing_rules"
 
     return 0
 }
@@ -191,14 +191,20 @@ open_ufw_port() {
     local protocol=$2
 
     if command -v ufw >/dev/null 2>&1; then
-        if [[ "$port_range" =~ ^[0-9]+:[0-9]+$ ]]; then
+        if [[ "$protocol" = "ut" ]]; then
+            # 如果 protocol 是 "ut"，表示同时开放 TCP 和 UDP
+            ufw allow "$port_range"
+            info "已在ufw中同时开放TCP和UDP端口 $port_range"
+        elif [[ "$port_range" =~ ^[0-9]+:[0-9]+$ ]]; then
+            # 开放指定的端口范围
             local start_port=$(echo "$port_range" | cut -d: -f1)
             local end_port=$(echo "$port_range" | cut -d: -f2)
-            for ((port=start_port; port<=end_port; port++)); do
+            for ((port = start_port; port <= end_port; port++)); do
                 ufw allow "$port/$protocol"
                 info "已在ufw中开放 $protocol 端口 $port"
             done
         else
+            # 单个端口
             ufw allow "$port_range/$protocol"
             info "已在ufw中开放 $protocol 端口 $port_range"
         fi
@@ -230,10 +236,10 @@ add_iptables_rule() {
 # 保存iptables规则
 save_rules() {
     if command -v iptables-save >/dev/null 2>&1; then
-        iptables-save > /etc/iptables.rules
+        iptables-save >/etc/iptables.rules
 
         if [ ! -f /etc/network/if-pre-up.d/iptables ]; then
-            cat > /etc/network/if-pre-up.d/iptables <<EOF
+            cat >/etc/network/if-pre-up.d/iptables <<EOF
 #!/bin/sh
 iptables-restore < /etc/iptables.rules
 EOF
