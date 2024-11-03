@@ -25,5 +25,5 @@ wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoo
 jump
 
 ```bash
-wget -N --no-check-certificate https://gist.githubusercontent.com/GrahLnn/793fa0f8cf6a1de1489bc630ae7f50fc/raw/f25b1ac3a788325d67c759b9fd382dd6f23f0db2/jumport.sh && bash jumport.sh
+wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/jumport.sh && bash jumport.sh
 ```
