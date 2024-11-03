@@ -103,7 +103,7 @@ auth:
 masquerade:
   type: proxy
   proxy:
-    url: https://www.bing.com/
+    url: https://en.snu.ac.kr
     rewriteHost: true
 
 quic:
