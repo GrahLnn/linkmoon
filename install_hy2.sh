@@ -27,7 +27,7 @@ menu() {
     echo -e " ${GREEN}1.${PLAIN} 安装 Hysteria 2"
     echo -e " ${RED}2.${PLAIN} 卸载 Hysteria 2"
     echo " ------------------------------------------------------------"
-    echo -e " 3. 启动、停止、重启 Hysteria 2"
+    echo -e " 3. 启动、停止、重启、检视 Hysteria 2"
     echo -e " 4. 修改 Hysteria 2 配置"
     echo " ------------------------------------------------------------"
     echo -e " 0. 退出脚本"
