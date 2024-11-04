@@ -34,12 +34,16 @@ menu() {
     echo ""
     read -rp "请输入选项 [0-4]: " menuInput
     case $menuInput in
-        1 ) insthysteria ;;
-        2 ) unsthysteria ;;
-        3 ) hysteriaswitch ;;
-        4 ) changeconf ;;
-        0 ) exit 0 ;;
-        * ) echo -e "${RED}请输入正确的选项！${PLAIN}"; sleep 2; menu ;;
+    1) insthysteria ;;
+    2) unsthysteria ;;
+    3) hysteriaswitch ;;
+    4) changeconf ;;
+    0) exit 0 ;;
+    *)
+        echo -e "${RED}请输入正确的选项！${PLAIN}"
+        sleep 2
+        menu
+        ;;
     esac
 }
 
@@ -107,13 +111,10 @@ masquerade:
     rewriteHost: true
 
 quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
-  maxIdleTimeout: 30s
-  maxIncomingStreams: 1024
-  disablePathMTUDiscovery: false
+  initStreamReceiveWindow: 26843545 
+  maxStreamReceiveWindow: 26843545 
+  initConnReceiveWindow: 67108864 
+  maxConnReceiveWindow: 67108864
 
 bandwidth:
   up: 1 gbps
@@ -187,12 +188,24 @@ hysteriaswitch() {
     echo ""
     read -rp "请输入选项 [0-4]: " actionInput
     case $actionInput in
-        1 ) systemctl start hysteria-server.service; echo "Hysteria 2 已启动。";;
-        2 ) systemctl stop hysteria-server.service; echo "Hysteria 2 已停止。";;
-        3 ) systemctl restart hysteria-server.service; echo "Hysteria 2 已重启。";;
-        4 ) systemctl status hysteria-server.service; read -p "按任意键返回...";;
-        0 ) menu ;;
-        * ) echo -e "${RED}请输入正确的选项！${PLAIN}";;
+    1)
+        systemctl start hysteria-server.service
+        echo "Hysteria 2 已启动。"
+        ;;
+    2)
+        systemctl stop hysteria-server.service
+        echo "Hysteria 2 已停止。"
+        ;;
+    3)
+        systemctl restart hysteria-server.service
+        echo "Hysteria 2 已重启。"
+        ;;
+    4)
+        systemctl status hysteria-server.service
+        read -p "按任意键返回..."
+        ;;
+    0) menu ;;
+    *) echo -e "${RED}请输入正确的选项！${PLAIN}" ;;
     esac
     sleep 2
     hysteriaswitch
