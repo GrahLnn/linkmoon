@@ -193,17 +193,17 @@ open_ufw_port() {
     if command -v ufw >/dev/null 2>&1; then
         if [[ "$protocol" = "ut" ]]; then
             # 如果 protocol 是 "ut"，表示同时开放 TCP 和 UDP
-            ufw allow "$port_range"
+            ufw allow "$port_range" >/dev/null 2>&1
         elif [[ "$port_range" =~ ^[0-9]+:[0-9]+$ ]]; then
             # 开放指定的端口范围
             local start_port=$(echo "$port_range" | cut -d: -f1)
             local end_port=$(echo "$port_range" | cut -d: -f2)
             for ((port = start_port; port <= end_port; port++)); do
-                ufw allow "$port/$protocol"
+                ufw allow "$port/$protocol" >/dev/null 2>&1
             done
         else
             # 单个端口
-            ufw allow "$port_range/$protocol"
+            ufw allow "$port_range/$protocol" >/dev/null 2>&1
         fi
     else
         warn "未检测到ufw，跳过防火墙端口开放"
