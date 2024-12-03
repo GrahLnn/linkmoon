@@ -40,3 +40,9 @@ install squid
 wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/install_squid.sh && bash install_squid.sh
 
 ```
+
+disable ipv6
+
+```bash
+wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/disable_ipv6.sh && bash disable_ipv6.sh
+```
