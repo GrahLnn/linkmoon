@@ -33,3 +33,10 @@ port jump
 ```bash
 wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/jumport.sh && bash jumport.sh
 ```
+
+install squid
+
+```bash
+wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/install_squid.sh && bash install_squid.sh
+
+```
