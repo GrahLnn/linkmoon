@@ -1,12 +1,11 @@
 #!/bin/bash
 
 # 安装所需软件包
-echo "Installing required packages..."
+echo "Installing squid..."
 apt update
 apt install apache2-utils squid -y
 
 # 创建认证文件并设置密码
-echo "Creating authentication file and setting password..."
 htpasswd -cb /etc/squid/passwords squid 22013
 
 # 配置 Squid 配置文件
@@ -73,6 +72,7 @@ else
 fi
 
 # 启动 Squid 服务
+echo "Starting Squid..."
 sudo systemctl restart squid
 sudo systemctl enable squid
 echo "Squid is now running on port 22013."
