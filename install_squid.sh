@@ -62,8 +62,7 @@ EOL
 if command -v ufw > /dev/null; then
     # 如果 ufw 被启用
     echo "UFW detected, opening port 22013..."
-    sudo ufw allow 22013/tcp
-    sudo ufw reload
+    sudo ufw allow 22013
     elif command -v iptables > /dev/null; then
     # 如果 iptables 被启用
     echo "Iptables detected, opening port 22013..."
