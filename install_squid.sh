@@ -7,7 +7,7 @@ apt install apache2-utils squid -y
 
 # 创建认证文件并设置密码
 echo "Creating authentication file and setting password..."
-htpasswd -cb /etc/squid/passwords squid
+htpasswd -cb /etc/squid/passwords squid 22013
 
 # 配置 Squid 配置文件
 cat <<EOL | sudo tee /etc/squid/squid.conf > /dev/null
