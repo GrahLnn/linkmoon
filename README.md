@@ -3,6 +3,11 @@
 ```bash
 bash <(wget -qO- bash.spiritlhl.net/ecs)
 ```
+sing-box
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/sing-box-yg/main/sb.sh)
+```
 
 warp
 
