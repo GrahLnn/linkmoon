@@ -3,6 +3,7 @@
 ```bash
 bash <(wget -qO- bash.spiritlhl.net/ecs)
 ```
+
 sing-box
 
 ```bash
