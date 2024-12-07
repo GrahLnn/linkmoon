@@ -22,6 +22,12 @@ update
 apt update -y && apt upgrade -y && apt full-upgrade -y && apt autoremove -y && apt install neovim curl unzip ufw jq -y && ufw allow ssh && ufw enable && timedatectl set-timezone Asia/Shanghai && sudo apt-mark hold ufw
 ```
 
+set cf token
+
+```bash
+wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/injcftoken.sh && bash injcftoken.sh
+```
+
 hy2_acme
 
 ```bash
