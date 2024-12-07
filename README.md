@@ -19,7 +19,7 @@ bash <(wget -qO- https://gitlab.com/rwkgyg/CFwarp/raw/main/CFwarp.sh 2> /dev/nul
 update
 
 ```bash
-apt update -y && apt upgrade -y && apt full-upgrade -y && apt autoremove -y && apt install neovim curl unzip ufw -y && ufw allow ssh && ufw enable && timedatectl set-timezone Asia/Shanghai && sudo apt-mark hold ufw
+apt update -y && apt upgrade -y && apt full-upgrade -y && apt autoremove -y && apt install neovim curl unzip ufw jq -y && ufw allow ssh && ufw enable && timedatectl set-timezone Asia/Shanghai && sudo apt-mark hold ufw
 ```
 
 hy2_acme
