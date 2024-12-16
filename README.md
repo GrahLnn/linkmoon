@@ -57,3 +57,8 @@ disable ipv6
 ```bash
 wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/disable_ipv6.sh && bash disable_ipv6.sh
 ```
+
+bbr v3
+```bash
+wget https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/refs/heads/main/install.sh && bash install.sh
+```
