@@ -40,6 +40,11 @@ hy2_tls
 wget -N --no-check-certificate https://raw.githubusercontent.com/flame1ce/hysteria2-install/main/hysteria2-install-main/hy2/hysteria.sh && bash hysteria.sh
 ```
 
+ssr
+```bash
+wget -N --no-check-certificate https://raw.githubusercontent.com/ToyoDAdoubiBackup/doubi/master/ss-go.sh && bash ss-go.sh
+```
+
 port jump
 
 ```bash
