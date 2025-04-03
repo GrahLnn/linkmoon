@@ -4,6 +4,10 @@
 bash <(wget -qO- bash.spiritlhl.net/ecs)
 ```
 
+```bash
+bash <(curl -sL https://run.NodeQuality.com)
+```
+
 sing-box
 
 ```bash
