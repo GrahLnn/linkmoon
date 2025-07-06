@@ -38,6 +38,12 @@ hy2_acme
 wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/install_hy2.sh && bash install_hy2.sh
 ```
 
+mihomo
+
+```bash
+wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/install_mihomo.sh && bash install_mihomo.sh
+```
+
 hy2_tls
 
 ```bash
