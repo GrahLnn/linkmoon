@@ -23,7 +23,7 @@ bash <(wget -qO- https://gitlab.com/rwkgyg/CFwarp/raw/main/CFwarp.sh 2> /dev/nul
 update
 
 ```bash
-apt update -y && apt upgrade -y && apt full-upgrade -y && apt autoremove -y && apt install neovim curl unzip cron net-tools jq -y && timedatectl set-timezone Asia/Shanghai
+apt update -y && apt upgrade -y && apt full-upgrade -y && apt autoremove -y && apt install neovim curl unzip cron net-tools jq -y && timedatectl set-timezone Asia/Shanghai && bash <(curl -Ls https://raw.githubusercontent.com/alireza0/s-ui/master/install.sh)
 ```
 
 set cf token
