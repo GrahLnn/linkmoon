@@ -77,3 +77,9 @@ bbr v3
 ```bash
 wget https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/refs/heads/main/install.sh && bash install.sh
 ```
+
+install 3proxy
+
+```bash
+wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/install-3proxy.sh && bash install-3proxy.sh
+```
