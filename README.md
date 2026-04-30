@@ -83,3 +83,9 @@ install 3proxy
 ```bash
 wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/install-3proxy.sh && bash install-3proxy.sh
 ```
+
+deploy vless+reality for sing-box
+
+```bash
+wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/vlessreality.sh && bash vlessreality.sh
+```
