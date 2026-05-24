@@ -36,6 +36,7 @@ SERVICE_PATH="${SERVICE_PATH:-/etc/systemd/system/sing-box.service}"
 BIN_PATH="${BIN_PATH:-/usr/local/bin/sing-box}"
 LATEST_JSON_URL="${LATEST_JSON_URL:-https://github.com/SagerNet/sing-box/releases/latest/download/latest.json}"
 GITHUB_RELEASE_API="${GITHUB_RELEASE_API:-https://api.github.com/repos/SagerNet/sing-box/releases/latest}"
+BBR_SYSCTL_PATH="${BBR_SYSCTL_PATH:-/etc/sysctl.d/99-vless-reality-bbr.conf}"
 
 domains=(
     tag.demandbase.com
@@ -74,20 +75,20 @@ domains=(
 usage() {
   cat <<'EOF'
 Usage:
-  ./generate-vless-reality-outbound.sh [deploy] [options]
-  ./generate-vless-reality-outbound.sh update [options]
-  ./generate-vless-reality-outbound.sh outbound [options]
-  ./generate-vless-reality-outbound.sh status
+  ./vlessreality.sh [deploy] [options]
+  ./vlessreality.sh update [options]
+  ./vlessreality.sh outbound [options]
+  ./vlessreality.sh status
 
 Commands:
-  deploy      Install/update sing-box, write server config, start service, print outbound. Default.
+  deploy      Install/update sing-box, enable BBR, write server config, start service, print outbound. Default.
   update      Download the latest sing-box binary and restart the existing service.
   outbound    Print the sing-box outbound from saved/generated values only.
   status      Show sing-box service status and saved outbound values.
 
 Options:
   --server <host>           Client-facing server address. Default: auto-detected public IP.
-  --port <port>             VLESS server port. Default: 443.
+  --port <port>             VLESS server port. Default: 443. Interactive deploy prompts when omitted.
   --uuid <uuid>             Reuse an existing VLESS UUID.
   --short-id <hex>          Reuse an existing Reality short_id.
   --private-key <key>       Reuse an existing Reality private key.
@@ -109,8 +110,22 @@ Environment variables with the same uppercase names can also be used.
 EOF
 }
 
+log_line() {
+  local level="$1"
+  shift
+  printf '[%s] %s\n' "$level" "$*" >&2
+}
+
 log() {
-  printf '%s\n' "$*" >&2
+  log_line INFO "$@"
+}
+
+log_warn() {
+  log_line WARN "$@"
+}
+
+log_error() {
+  log_line ERROR "$@"
 }
 
 need_value() {
@@ -277,19 +292,19 @@ have_python() {
 install_base_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update >&2
-    env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates openssl coreutils python3 gawk tar gzip iproute2 >&2
+    env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates openssl coreutils python3 gawk tar gzip iproute2 procps kmod >&2
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl ca-certificates openssl coreutils python3 gawk tar gzip iproute >&2
+    dnf install -y curl ca-certificates openssl coreutils python3 gawk tar gzip iproute procps-ng kmod >&2
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl ca-certificates openssl coreutils python3 gawk tar gzip iproute >&2
+    yum install -y curl ca-certificates openssl coreutils python3 gawk tar gzip iproute procps-ng kmod >&2
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache curl ca-certificates openssl coreutils python3 gawk tar gzip iproute2 >&2
+    apk add --no-cache curl ca-certificates openssl coreutils python3 gawk tar gzip iproute2 procps kmod >&2
   elif command -v pacman >/dev/null 2>&1; then
-    pacman -Sy --noconfirm --needed curl ca-certificates openssl coreutils python gawk tar gzip iproute2 >&2
+    pacman -Sy --noconfirm --needed curl ca-certificates openssl coreutils python gawk tar gzip iproute2 procps-ng kmod >&2
   elif command -v zypper >/dev/null 2>&1; then
-    zypper --non-interactive install --no-recommends curl ca-certificates openssl coreutils python3 gawk tar gzip iproute2 >&2
+    zypper --non-interactive install --no-recommends curl ca-certificates openssl coreutils python3 gawk tar gzip iproute2 procps kmod >&2
   else
-    printf 'No supported package manager found. Install curl, ca-certificates, openssl, coreutils, python3, awk, tar, gzip, and iproute manually.\n' >&2
+    printf 'No supported package manager found. Install curl, ca-certificates, openssl, coreutils, python3, awk, tar, gzip, iproute, sysctl, and kmod manually.\n' >&2
     exit 1
   fi
   hash -r 2>/dev/null || true
@@ -302,6 +317,8 @@ missing_dependencies() {
   command -v awk >/dev/null 2>&1 || printf '%s\n' awk
   command -v tar >/dev/null 2>&1 || printf '%s\n' tar
   command -v gzip >/dev/null 2>&1 || printf '%s\n' gzip
+  command -v sysctl >/dev/null 2>&1 || printf '%s\n' sysctl
+  command -v modprobe >/dev/null 2>&1 || printf '%s\n' modprobe
   have_python || printf '%s\n' python3
 }
 
@@ -316,7 +333,7 @@ ensure_dependencies() {
     exit 1
   fi
   require_root
-  printf 'Installing missing dependencies:\n%s\n' "$missing" >&2
+  log "Installing dependencies | missing=$(printf '%s' "$missing" | tr '\n' ',' | sed 's/,$//')"
   install_base_packages
 
   missing="$(missing_dependencies)"
@@ -324,6 +341,7 @@ ensure_dependencies() {
     printf 'Dependencies are still missing after installation:\n%s\n' "$missing" >&2
     exit 1
   fi
+  log "Dependencies ready"
 }
 
 now_ms() {
@@ -422,6 +440,22 @@ validate_port() {
   fi
 }
 
+prompt_server_port() {
+  if (( CLI_SERVER_PORT_SET == 1 )) || [[ ! -t 0 ]]; then
+    return
+  fi
+
+  local input default_port
+  default_port="${SERVER_PORT:-443}"
+  printf '[INPUT] VLESS listen port [%s]: ' "$default_port" >&2
+  read -r input || input=""
+  if [[ -n "$input" ]]; then
+    SERVER_PORT="$input"
+  else
+    SERVER_PORT="$default_port"
+  fi
+}
+
 validate_uuid() {
   if ! [[ "$UUID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
     printf 'UUID is not valid: %s\n' "$UUID" >&2
@@ -478,13 +512,10 @@ select_fastest_domain() {
     if timeout 1 openssl s_client -connect "$d:443" -servername "$d" </dev/null &>/dev/null; then
       t2=$(now_ms)
       elapsed=$((t2 - t1))
-      printf '%s: %s ms\n' "$d" "$elapsed" >&2
       if [[ -z "$best_elapsed" || "$elapsed" -lt "$best_elapsed" ]]; then
         best_elapsed="$elapsed"
         best_domain="$d"
       fi
-    else
-      printf '%s: timeout\n' "$d" >&2
     fi
   done
 
@@ -495,6 +526,48 @@ select_fastest_domain() {
 
   SNI="${SNI:-$best_domain}"
   HANDSHAKE_SERVER="${HANDSHAKE_SERVER:-$best_domain}"
+  log "Reality domain selected | sni=$SNI handshake=$HANDSHAKE_SERVER latency=${best_elapsed}ms"
+}
+
+ensure_bbr() {
+  require_root
+
+  local current available previous
+  previous="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+  current="$previous"
+  if [[ "$current" == "bbr" ]]; then
+    log "BBR ready | congestion_control=bbr"
+    return
+  fi
+
+  if command -v modprobe >/dev/null 2>&1; then
+    modprobe tcp_bbr 2>/dev/null || true
+  fi
+
+  available="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+  if ! printf '%s\n' "$available" | grep -qw bbr; then
+    log_error "BBR unavailable | available=${available:-unknown}"
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$BBR_SYSCTL_PATH")"
+  cat > "$BBR_SYSCTL_PATH" <<EOF
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+
+  if ! sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; then
+    log_warn "Could not set net.core.default_qdisc=fq at runtime"
+  fi
+  sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null
+
+  current="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+  if [[ "$current" != "bbr" ]]; then
+    log_error "Failed to enable BBR | current=${current:-unknown}"
+    exit 1
+  fi
+
+  log "BBR enabled | previous=${previous:-unknown} current=bbr config=$BBR_SYSCTL_PATH"
 }
 
 detect_public_ip() {
@@ -897,13 +970,13 @@ install_or_update_sing_box() {
   require_root
   ensure_dependencies
 
-  local meta version url name tmpdir archive binary
+  local meta version url name tmpdir archive binary installed_version
   meta="$(resolve_sing_box_asset)"
   IFS=$'\t' read -r version url name <<< "$meta"
 
   tmpdir="$(mktemp -d)"
   archive="$tmpdir/$name"
-  log "Downloading sing-box ${version:-latest}: $name"
+  log "Downloading sing-box | version=${version:-latest} asset=$name"
   curl -fL --retry 3 --connect-timeout 15 --max-time 300 -o "$archive" "$url"
   tar -xzf "$archive" -C "$tmpdir"
 
@@ -916,7 +989,8 @@ install_or_update_sing_box() {
 
   install -m 0755 "$binary" "$BIN_PATH"
   rm -rf "$tmpdir"
-  "$BIN_PATH" version >&2
+  installed_version="$("$BIN_PATH" version 2>/dev/null | head -n 1)"
+  log "sing-box installed | path=$BIN_PATH version=$installed_version"
 }
 
 write_sing_box_config() {
@@ -978,6 +1052,7 @@ write_sing_box_config() {
 }
 EOF
   chmod 600 "$CONFIG_PATH"
+  log "Config written | path=$CONFIG_PATH port=$SERVER_PORT"
 }
 
 write_systemd_service() {
@@ -1004,13 +1079,16 @@ LimitNOFILE=infinity
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
+  log "systemd service written | path=$SERVICE_PATH"
 }
 
 check_sing_box_config() {
   if "$BIN_PATH" check -c "$CONFIG_PATH" >/dev/null; then
+    log "Config check passed | path=$CONFIG_PATH"
     return
   fi
   "$BIN_PATH" check "$CONFIG_PATH" >/dev/null
+  log "Config check passed | path=$CONFIG_PATH"
 }
 
 restart_sing_box() {
@@ -1027,15 +1105,18 @@ restart_sing_box() {
     printf 'sing-box service failed to start.\n' >&2
     exit 1
   fi
+  log "Service active | name=sing-box"
 }
 
 open_local_firewall_port() {
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active; then
     ufw allow "${SERVER_PORT}/tcp" >/dev/null || true
+    log "Firewall updated | ufw port=${SERVER_PORT}/tcp"
   fi
   if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     firewall-cmd --add-port="${SERVER_PORT}/tcp" --permanent >/dev/null || true
     firewall-cmd --reload >/dev/null || true
+    log "Firewall updated | firewalld port=${SERVER_PORT}/tcp"
   fi
 }
 
@@ -1047,23 +1128,11 @@ verify_service() {
       exit 1
     fi
   fi
+  log "Service verified | port=$SERVER_PORT"
 }
 
-print_values() {
-  cat <<EOF
-# Generated Reality/VLESS values
-PRIVATE_KEY=$PRIVATE_KEY
-PUBLIC_KEY=$PUBLIC_KEY
-UUID=$UUID
-SHORT_ID=$SHORT_ID
-SNI=$SNI
-HANDSHAKE_SERVER=$HANDSHAKE_SERVER
-HANDSHAKE_PORT=$HANDSHAKE_PORT
-SERVER=$SERVER
-SERVER_PORT=$SERVER_PORT
-
-# sing-box outbound
-EOF
+print_summary() {
+  log "Outbound ready | tag=$TAG server=$SERVER port=$SERVER_PORT sni=$SNI handshake=${HANDSHAKE_SERVER}:${HANDSHAKE_PORT}"
 }
 
 print_outbound() {
@@ -1112,6 +1181,10 @@ validate_generated_values() {
 }
 
 prepare_generated_values() {
+  local prompt_port="${1:-0}"
+  if [[ "$prompt_port" == "1" ]]; then
+    prompt_server_port
+  fi
   validate_port SERVER_PORT "$SERVER_PORT"
   validate_port HANDSHAKE_PORT "$HANDSHAKE_PORT"
   validate_domain_candidates
@@ -1127,7 +1200,8 @@ prepare_generated_values() {
 
 command_deploy() {
   require_root
-  prepare_generated_values
+  prepare_generated_values 1
+  ensure_bbr
   install_or_update_sing_box
   write_sing_box_config
   check_sing_box_config
@@ -1137,7 +1211,7 @@ command_deploy() {
   verify_service
   save_state
   if (( JSON_ONLY == 0 )); then
-    print_values
+    print_summary
   fi
   print_outbound
 }
@@ -1158,9 +1232,9 @@ command_update() {
 }
 
 command_outbound() {
-  prepare_generated_values
+  prepare_generated_values 0
   if (( JSON_ONLY == 0 )); then
-    print_values
+    print_summary
   fi
   print_outbound
 }
@@ -1172,7 +1246,7 @@ command_status() {
     printf 'sing-box systemd service is not installed.\n'
   fi
   if [[ -n "$UUID" && -n "$PUBLIC_KEY" ]]; then
-    print_values
+    print_summary
     print_outbound
   elif [[ -f "$STATE_PATH" ]]; then
     printf 'State file exists at %s but did not load complete values.\n' "$STATE_PATH"
