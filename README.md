@@ -75,7 +75,7 @@ wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoo
 
 bbr v3
 ```bash
-wget https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/refs/heads/main/install.sh && bash install.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/bbr-v3-bootstrap.sh)
 ```
 
 install 3proxy
