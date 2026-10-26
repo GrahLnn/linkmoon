@@ -84,8 +84,8 @@ install 3proxy
 wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/install-3proxy.sh && bash install-3proxy.sh
 ```
 
-deploy vless+reality for sing-box
+deploy REALITY + Hysteria2 for sing-box (always installs both)
 
 ```bash
-wget -N --no-check-certificate https://raw.githubusercontent.com/GrahLnn/linkmoon/refs/heads/main/vlessreality.sh && bash vlessreality.sh
+curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/sing-box-reality-hy2.sh -o sing-box-reality-hy2.sh && sh sing-box-reality-hy2.sh
 ```

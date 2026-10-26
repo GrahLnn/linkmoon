@@ -1,5 +1,5 @@
 #!/bin/sh
-# sing-box REALITY / Hysteria2 installer (Debian/Ubuntu, POSIX sh).
+# sing-box REALITY + Hysteria2 installer (Debian/Ubuntu, POSIX sh).
 # No Python or pinned sing-box version. Only REALITY-maintained SNI candidates.
 set -eu
 umask 077
@@ -19,8 +19,7 @@ RELEASE_API=${RELEASE_API:-https://api.github.com/repos/SagerNet/sing-box/releas
 REALITY_LIST_URL=${REALITY_LIST_URL:-https://raw.githubusercontent.com/meower1/Reality-SNI-finder/main/sni.txt}
 
 COMMAND=deploy
-PROTOCOLS=both
-PROTOCOLS_SET=0
+# Deployment always enables both; test detects protocols in the saved config.
 USE_REALITY=1
 USE_HY2=1
 REALITY_PORT=443
@@ -65,12 +64,10 @@ die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 usage() {
 cat <<'HELP'
-Usage: sh vlessreality.sh [deploy|reconfigure|show|test|status] [options]
+Usage: sh sing-box-reality-hy2.sh [deploy|reconfigure|show|test|status] [options]
 
-Interactive setup: Up/Down to move, Space to toggle, Enter to confirm.
-REALITY and Hysteria2 are both selected by default.
+Every deployment installs both REALITY (TCP) and Hysteria2 (UDP).
 
-  --protocols both|reality|hy2|reality,hy2  Skip protocol selector.
   --port N                 REALITY TCP port (default 443; alias for --reality-port).
   --reality-port N         REALITY TCP port.
   --hy2-port N             Hysteria2 UDP port (default 443).
@@ -86,7 +83,7 @@ REALITY and Hysteria2 are both selected by default.
   --no-download           Reuse the existing sing-box binary.
 
 Commands:
-  deploy / reconfigure    Select, configure, replace, then verify each protocol.
+  deploy / reconfigure    Configure, replace, then verify both protocols.
   show                    Show saved outbound JSON and import URIs.
   test                    Re-test saved protocols without touching credentials.
   status                  Show service status and sockets.
@@ -104,7 +101,6 @@ parse_args() {
   esac
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --protocols) require_arg "$@"; PROTOCOLS=$2; PROTOCOLS_SET=1; shift 2 ;;
       --port|--reality-port) require_arg "$@"; REALITY_PORT=$2; REALITY_PORT_SET=1; shift 2 ;;
       --hy2-port) require_arg "$@"; HY2_PORT=$2; HY2_PORT_SET=1; shift 2 ;;
       --hy2-cert) require_arg "$@"; HY2_CERT=$2; HY2_CERT_SET=1; shift 2 ;;
@@ -124,38 +120,6 @@ parse_args() {
 }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die 'Run as root'; }
-
-# This selector is the first interactive configuration step. whiptail provides
-# native terminal Up/Down + Space + Enter controls without non-POSIX shell code.
-select_protocols() {
-  if [ "$PROTOCOLS_SET" -eq 0 ] && [ "$YES" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
-    if ! command -v whiptail >/dev/null 2>&1; then
-      command -v apt-get >/dev/null 2>&1 || die 'apt-get is required to install whiptail.'
-      info 'Installing TUI dependency via apt...'
-      apt-get update
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends whiptail
-    fi
-    selected=$(whiptail --title 'sing-box | 协议选择' --separate-output \
-      --checklist '↑/↓ 移动  空格切换  Enter 确认（默认双选）' \
-      16 78 5 \
-      REALITY 'VLESS + REALITY + Vision  · TCP' ON \
-      HY2 'Hysteria2 + QUIC  · UDP' ON \
-      3>&1 1>&2 2>&3) || die 'Protocol selection cancelled.'
-    USE_REALITY=0
-    USE_HY2=0
-    printf '%s\n' "$selected" | grep -qx REALITY && USE_REALITY=1 || :
-    printf '%s\n' "$selected" | grep -qx HY2 && USE_HY2=1 || :
-  else
-    case "$PROTOCOLS" in
-      both|reality,hy2|hy2,reality) USE_REALITY=1; USE_HY2=1 ;;
-      reality|vless) USE_REALITY=1; USE_HY2=0 ;;
-      hy2|hysteria2) USE_REALITY=0; USE_HY2=1 ;;
-      *) die "Invalid --protocols: $PROTOCOLS" ;;
-    esac
-  fi
-  [ "$USE_REALITY" -eq 1 ] || [ "$USE_HY2" -eq 1 ] || die 'Select at least one protocol.'
-  info "Selected protocols: REALITY=$USE_REALITY, HY2=$USE_HY2"
-}
 
 ensure_dependencies() {
   [ -f /etc/debian_version ] || die 'Only Debian/Ubuntu (apt) is supported.'
@@ -910,14 +874,16 @@ print_clients() {
 
 deploy() {
   require_root
-  select_protocols
+  USE_REALITY=1
+  USE_HY2=1
+  info 'Installing REALITY (TCP) + Hysteria2 (UDP).'
   confirm_reconfiguration
   prompt_settings
   validate_settings
   ensure_dependencies
   resolve_server
   STAGE=$(mktemp -d)
-  if [ "$USE_REALITY" -eq 1 ]; then select_sni; fi
+  select_sni
   select_release
   require_recent_binary
   generate_credentials
@@ -929,15 +895,15 @@ deploy() {
   COMMIT=1
   if [ "$REPLACE_BINARY" -eq 1 ]; then install -m 755 "$NEW_BIN" "$BIN_FILE"; fi
   install -m 600 "$STAGE/config.json" "$CONFIG_FILE"
-  if [ "$USE_REALITY" -eq 1 ]; then install -m 600 "$STAGE/reality-client.json" "$REALITY_CLIENT"; else rm -f "$REALITY_CLIENT"; fi
-  if [ "$USE_HY2" -eq 1 ]; then install -m 600 "$STAGE/hysteria2-client.json" "$HY2_CLIENT"; else rm -f "$HY2_CLIENT"; fi
-  if [ "$USE_HY2" -eq 1 ] && [ "$HY2_CERT" = self-signed ]; then
+  install -m 600 "$STAGE/reality-client.json" "$REALITY_CLIENT"
+  install -m 600 "$STAGE/hysteria2-client.json" "$HY2_CLIENT"
+  if [ "$HY2_CERT" = self-signed ]; then
     install -m 600 "$STAGE/hysteria2.crt" "$HY2_CERT_FILE"
     install -m 600 "$STAGE/hysteria2.key" "$HY2_KEY_FILE"
   else
     rm -f "$HY2_CERT_FILE" "$HY2_KEY_FILE"
   fi
-  if [ "$USE_HY2" -eq 1 ] && [ "$HY2_CERT" = acme ]; then
+  if [ "$HY2_CERT" = acme ]; then
     mkdir -p "$ACME_DATA_DIR"
     chmod 700 "$ACME_DATA_DIR"
   fi
@@ -959,7 +925,7 @@ deploy() {
     warn 'CHECK SKIPPED (--skip-test)'
   fi
   COMMIT=0
-  info "Installed: REALITY=$USE_REALITY TCP/$REALITY_PORT; HY2=$USE_HY2 UDP/$HY2_PORT"
+  info "Installed: REALITY TCP/$REALITY_PORT + Hysteria2 UDP/$HY2_PORT"
   print_clients
 }
 
