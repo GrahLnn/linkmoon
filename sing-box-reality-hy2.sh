@@ -26,7 +26,6 @@ USE_HY2=1
 REALITY_PORT=443
 HY2_PORT=443
 REALITY_PORT_SET=0
-HY2_PORT_SET=0
 HY2_DOMAIN=${HY2_DOMAIN:-}
 HY2_INTERFACE=${HY2_INTERFACE:-}
 CF_API_TOKEN=${CF_API_TOKEN:-${CF_Token:-}}
@@ -74,7 +73,7 @@ Every deployment installs both REALITY (TCP) and Hysteria2 (UDP).
 
   --port N                 REALITY TCP port (default 443; alias for --reality-port).
   --reality-port N         REALITY TCP port.
-  --hy2-port N             Hysteria2 UDP port (default 443).
+  --hy2-port N             Internal HY2 listener; external hopping stays 20000-50000.
   --hy2-domain DOMAIN      Cloudflare DNS-only domain pointing to this VPS; required.
   --acme-email EMAIL       Optional ACME account email.
   --server HOST_OR_IP      REALITY address; default autodetect IPv4.
@@ -110,7 +109,7 @@ parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --port|--reality-port) require_arg "$@"; REALITY_PORT=$2; REALITY_PORT_SET=1; shift 2 ;;
-      --hy2-port) require_arg "$@"; HY2_PORT=$2; HY2_PORT_SET=1; shift 2 ;;
+      --hy2-port) require_arg "$@"; HY2_PORT=$2; shift 2 ;;
       --hy2-domain) require_arg "$@"; HY2_DOMAIN=$2; shift 2 ;;
       --acme-email) require_arg "$@"; ACME_EMAIL=$2; shift 2 ;;
       --server) require_arg "$@"; SERVER=$2; shift 2 ;;
@@ -180,9 +179,7 @@ prompt_settings() {
     REALITY_PORT=$(prompt_port 'REALITY TCP 端口' "$REALITY_PORT")
   fi
   if [ "$USE_HY2" -eq 1 ]; then
-    if [ "$HY2_PORT_SET" -eq 0 ]; then
-      HY2_PORT=$(prompt_port 'Hysteria2 UDP 端口' "$HY2_PORT")
-    fi
+    info "HY2 已开启 UDP 端口跳跃：$HY2_HOP_START-$HY2_HOP_END"
     if [ -z "$HY2_DOMAIN" ]; then
       HY2_DOMAIN=$(prompt_port 'HY2 Cloudflare 域名（灰云 DNS-only）' '')
     fi
@@ -999,7 +996,7 @@ deploy() {
     warn 'CHECK SKIPPED (--skip-test)'
   fi
   COMMIT=0
-  info "Installed: REALITY TCP/$REALITY_PORT + HY2 $HY2_DOMAIN (Cloudflare DNS-01, Gecko, UDP 20000-50000 -> $HY2_PORT)"
+  info "Installed: REALITY TCP/$REALITY_PORT + HY2 $HY2_DOMAIN (Cloudflare DNS-01, Gecko, UDP 20000-50000)"
   info 'Allow UDP 20000-50000 in the VPS/security-group firewall; use Cloudflare DNS-only.'
   print_clients
 }
