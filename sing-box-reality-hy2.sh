@@ -10,6 +10,7 @@ REALITY_CLIENT=$CONFIG_DIR/reality-client.json
 HY2_CLIENT=$CONFIG_DIR/hysteria2-client.json
 HY2_CERT_FILE=$CONFIG_DIR/hysteria2.crt
 HY2_KEY_FILE=$CONFIG_DIR/hysteria2.key
+HY2_HOP_FILE=$CONFIG_DIR/hysteria2-hop.nft
 ACME_DATA_DIR=${ACME_DATA_DIR:-/var/lib/sing-box/acme}
 BIN_FILE=${BIN_FILE:-/usr/local/bin/sing-box}
 UNIT_FILE=${UNIT_FILE:-/etc/systemd/system/sing-box.service}
@@ -26,10 +27,14 @@ REALITY_PORT=443
 HY2_PORT=443
 REALITY_PORT_SET=0
 HY2_PORT_SET=0
-HY2_CERT=acme
-HY2_CERT_SET=0
-HY2_OBFS=none
-HY2_OBFS_SET=0
+HY2_DOMAIN=${HY2_DOMAIN:-}
+HY2_INTERFACE=${HY2_INTERFACE:-}
+CF_API_TOKEN=${CF_API_TOKEN:-${CF_Token:-}}
+CF_ZONE_TOKEN=${CF_ZONE_TOKEN:-}
+ACME_EMAIL=${ACME_EMAIL:-}
+readonly HY2_HOP_START=20000 HY2_HOP_END=50000 HY2_HOP_INTERVAL=30s
+NFT_BIN=
+TTY_STATE=
 SERVER=
 SNI=
 TAG=
@@ -56,7 +61,6 @@ PRIVATE_KEY=
 PUBLIC_KEY=
 HY2_PASSWORD=
 HY2_OBFS_PASSWORD=
-HY2_PIN=
 
 info() { printf '[INFO] %s\n' "$*" >&2; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
@@ -71,9 +75,9 @@ Every deployment installs both REALITY (TCP) and Hysteria2 (UDP).
   --port N                 REALITY TCP port (default 443; alias for --reality-port).
   --reality-port N         REALITY TCP port.
   --hy2-port N             Hysteria2 UDP port (default 443).
-  --hy2-cert acme|self-signed   Certificate method (default acme IP/domain).
-  --hy2-obfs none|gecko    HY2 QUIC obfuscation (default none).
-  --server HOST_OR_IP      Public client-facing address; default autodetect IPv4.
+  --hy2-domain DOMAIN      Cloudflare DNS-only domain pointing to this VPS; required.
+  --acme-email EMAIL       Optional ACME account email.
+  --server HOST_OR_IP      REALITY address; default autodetect IPv4.
   --sni DOMAIN            REALITY SNI; default benchmark the online REALITY list.
   --tag NAME              Generic client tag; default based on server address.
   --scan-limit N          SNI candidates (default 160).
@@ -88,7 +92,11 @@ Commands:
   test                    Re-test saved protocols without touching credentials.
   status                  Show service status and sockets.
 
-For ACME certificates TCP port 80 must be externally reachable (HTTP-01).
+HY2 always uses Cloudflare DNS-01 ACME, Gecko and UDP port hopping 20000-50000.
+Set CF_API_TOKEN (or CF_Token); optional CF_ZONE_TOKEN supplies Zone:Read.
+The token needs Zone:DNS:Edit and Zone:Read for the domain's zone.
+Interactive token input is hidden. DNS-01 does not require TCP port 80.
+Allow UDP 20000-50000 in the VPS/security-group firewall; keep Cloudflare DNS-only.
 Failed deployment restores the previous configuration and service.
 HELP
 }
@@ -103,8 +111,8 @@ parse_args() {
     case "$1" in
       --port|--reality-port) require_arg "$@"; REALITY_PORT=$2; REALITY_PORT_SET=1; shift 2 ;;
       --hy2-port) require_arg "$@"; HY2_PORT=$2; HY2_PORT_SET=1; shift 2 ;;
-      --hy2-cert) require_arg "$@"; HY2_CERT=$2; HY2_CERT_SET=1; shift 2 ;;
-      --hy2-obfs) require_arg "$@"; HY2_OBFS=$2; HY2_OBFS_SET=1; shift 2 ;;
+      --hy2-domain) require_arg "$@"; HY2_DOMAIN=$2; shift 2 ;;
+      --acme-email) require_arg "$@"; ACME_EMAIL=$2; shift 2 ;;
       --server) require_arg "$@"; SERVER=$2; shift 2 ;;
       --sni) require_arg "$@"; SNI=$2; shift 2 ;;
       --tag) require_arg "$@"; TAG=$2; shift 2 ;;
@@ -127,18 +135,19 @@ ensure_dependencies() {
   command -v systemctl >/dev/null 2>&1 || die 'systemd is required.'
   [ -d /run/systemd/system ] || die 'systemd must be PID 1.'
   needed=
-  for tool in curl jq openssl tar timeout ss ip awk sha256sum; do
+  for tool in curl jq openssl tar timeout ss ip awk sha256sum nft; do
     command -v "$tool" >/dev/null 2>&1 || needed="$needed $tool"
   done
   if [ -n "$needed" ]; then
     info "Installing required tools through apt:$needed"
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl jq openssl tar gzip coreutils iproute2 procps gawk
+      ca-certificates curl jq openssl tar gzip coreutils iproute2 procps gawk nftables
   fi
-  for tool in curl jq openssl tar timeout ss ip awk sha256sum; do
+  for tool in curl jq openssl tar timeout ss ip awk sha256sum nft; do
     command -v "$tool" >/dev/null 2>&1 || die "Missing tool: $tool"
   done
+  NFT_BIN=$(command -v nft)
   if [ "$USE_REALITY" -eq 1 ]; then
     curl -V | grep -q HTTP2 || die 'curl needs HTTP/2 for REALITY candidate checks.'
   fi
@@ -174,11 +183,17 @@ prompt_settings() {
     if [ "$HY2_PORT_SET" -eq 0 ]; then
       HY2_PORT=$(prompt_port 'Hysteria2 UDP 端口' "$HY2_PORT")
     fi
-    if [ "$HY2_CERT_SET" -eq 0 ]; then
-      HY2_CERT=$(prompt_port 'HY2 证书 acme/self-signed' "$HY2_CERT")
+    if [ -z "$HY2_DOMAIN" ]; then
+      HY2_DOMAIN=$(prompt_port 'HY2 Cloudflare 域名（灰云 DNS-only）' '')
     fi
-    if [ "$HY2_OBFS_SET" -eq 0 ]; then
-      HY2_OBFS=$(prompt_port 'HY2 混淆 none/gecko' "$HY2_OBFS")
+    if [ -z "$CF_API_TOKEN" ] && [ "$YES" -eq 0 ] && [ -t 0 ]; then
+      printf 'Cloudflare API Token（隐藏输入）: ' >&2
+      TTY_STATE=$(stty -g)
+      stty -echo
+      IFS= read -r CF_API_TOKEN || CF_API_TOKEN=
+      stty "$TTY_STATE"
+      TTY_STATE=
+      printf '\n' >&2
     fi
   fi
 }
@@ -193,13 +208,13 @@ validate_settings() {
   [ "$USE_HY2" -eq 0 ] || validate_number HY2_PORT "$HY2_PORT" 65535
   validate_number SCAN_LIMIT "$SCAN_LIMIT" 1000
   validate_number SCAN_JOBS "$SCAN_JOBS" 16
-  case "$HY2_CERT" in acme|self-signed) : ;; *) die 'HY2 cert must be acme or self-signed.' ;; esac
-  case "$HY2_OBFS" in none|gecko) : ;; *) die 'HY2 obfuscation must be none or gecko.' ;; esac
+  validate_hy2_domain
+  [ -n "$CF_API_TOKEN" ] || die 'Set CF_API_TOKEN (or CF_Token) for Cloudflare DNS-01.'
+  case "$CF_API_TOKEN$CF_ZONE_TOKEN" in *[!A-Za-z0-9_-]*) die 'Invalid Cloudflare API token format.' ;; esac
   REALITY_PORT=$(awk -v n="$REALITY_PORT" 'BEGIN{printf "%d",n+0}')
   HY2_PORT=$(awk -v n="$HY2_PORT" 'BEGIN{printf "%d",n+0}')
   SCAN_LIMIT=$(awk -v n="$SCAN_LIMIT" 'BEGIN{printf "%d",n+0}')
   SCAN_JOBS=$(awk -v n="$SCAN_JOBS" 'BEGIN{printf "%d",n+0}')
-  [ "$USE_HY2" -eq 0 ] || [ "$HY2_CERT" != acme ] || [ "$USE_REALITY" -eq 0 ] || [ "$REALITY_PORT" -ne 80 ] || die 'ACME HTTP-01 requires TCP 80 free; REALITY cannot use TCP 80.'
 }
 
 validate_domain() {
@@ -209,6 +224,13 @@ validate_domain() {
     /\.\./ {exit 1}
     {n=split($0,a,"."); for(i=1;i<=n;i++) if(length(a[i])<1 || length(a[i])>63 || a[i] ~ /^-/ || a[i] ~ /-$/) exit 1}
   ' || die "Invalid hostname: $1"
+}
+
+validate_hy2_domain() {
+  [ -n "$HY2_DOMAIN" ] || die 'HY2 requires --hy2-domain with a Cloudflare domain; IP certificates are disabled.'
+  HY2_DOMAIN=$(printf '%s' "$HY2_DOMAIN" | tr 'A-Z' 'a-z')
+  validate_domain "$HY2_DOMAIN"
+  case "$HY2_DOMAIN" in *[!0-9.]*) : ;; *) die 'HY2 domain must be a DNS hostname, not an IP address.' ;; esac
 }
 
 validate_server() {
@@ -236,13 +258,6 @@ resolve_server() {
     TAG=$(printf 'node-%s' "$SERVER" | tr ':.' '--' | tr -cd 'A-Za-z0-9._-' | cut -c 1-52)
   fi
   [ -n "$TAG" ] && [ "${#TAG}" -le 70 ] || die 'Invalid client tag.'
-  # ACME for bare IP uses the automatically-selected shortlived profile.
-  if [ "$USE_HY2" -eq 1 ] && [ "$HY2_CERT" = self-signed ]; then
-    case "$SERVER" in
-      *:*) SAN="IP:$SERVER" ;;
-      *) if printf '%s\n' "$SERVER" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then SAN="IP:$SERVER"; else SAN="DNS:$SERVER"; fi ;;
-    esac
-  fi
 }
 
 fetch_candidates() {
@@ -395,9 +410,7 @@ require_recent_binary() {
   v=$("$NEW_BIN" version | awk '/^sing-box version / {print $3; exit}')
   [ -n "$v" ] || die 'Could not determine sing-box version.'
   printf '%s\n' "$v" | awk -F. '{exit !(($1>1) || ($1==1 && $2>=14))}' || die 'HY2 configuration needs sing-box 1.14 or newer.'
-  if [ "$HY2_CERT" = acme ]; then
-    "$NEW_BIN" version | grep -q with_acme || die 'sing-box binary must be built with with_acme.'
-  fi
+  "$NEW_BIN" version | grep -q with_acme || die 'sing-box binary must be built with with_acme.'
 }
 
 generate_credentials() {
@@ -413,21 +426,15 @@ generate_credentials() {
   fi
   if [ "$USE_HY2" -eq 1 ]; then
     HY2_PASSWORD=$(openssl rand -hex 24)
-    if [ "$HY2_OBFS" = gecko ]; then HY2_OBFS_PASSWORD=$(openssl rand -hex 24); fi
-    if [ "$HY2_CERT" = self-signed ]; then
-      openssl ecparam -name prime256v1 -genkey -noout -out "$STAGE/hysteria2.key" || die 'ECDSA private key creation failed.'
-      openssl req -new -x509 -sha256 -days 365 \
-        -key "$STAGE/hysteria2.key" -out "$STAGE/hysteria2.crt" \
-        -subj "/CN=$SERVER" -addext "subjectAltName=$SAN" \
-        -addext 'extendedKeyUsage=serverAuth' || die 'Self-signed certificate generation failed.'
-      HY2_PIN=$(openssl x509 -in "$STAGE/hysteria2.crt" -pubkey -noout | \
-        openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | openssl base64 -A)
-      [ -n "$HY2_PIN" ] || die 'Could not calculate HY2 certificate public key pin.'
-    fi
+    HY2_OBFS_PASSWORD=$(openssl rand -hex 24)
   fi
 }
 
 build_configs() {
+  if [ -z "$HY2_INTERFACE" ]; then
+    HY2_INTERFACE=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1);exit}}')
+  fi
+  case "$HY2_INTERFACE" in ''|*[!A-Za-z0-9_.:@-]*) die 'Cannot identify HY2 ingress interface; set HY2_INTERFACE.' ;; esac
   # Each inbound is an independent JSON object, joined by jq (not string concatenation).
   : > "$STAGE/inbounds.jsonl"
   if [ "$USE_REALITY" -eq 1 ]; then
@@ -449,40 +456,51 @@ build_configs() {
   fi
 
   if [ "$USE_HY2" -eq 1 ]; then
-    if [ "$HY2_CERT" = acme ]; then
-      jq -n --arg server "$SERVER" --arg directory "$ACME_DATA_DIR" '
-        {enabled:true,certificate_provider:{type:"acme",domain:[$server],
-        data_directory:$directory,default_server_name:$server,provider:"letsencrypt",
-        key_type:"p256",disable_tls_alpn_challenge:true}}
-      ' > "$STAGE/hy2-tls.json"
-      jq -n --arg server "$SERVER" '{enabled:true,server_name:$server,insecure:false}' > "$STAGE/hy2-client-tls.json"
-    else
-      jq -n --arg crt "$HY2_CERT_FILE" --arg key "$HY2_KEY_FILE" '
-        {enabled:true,certificate_path:$crt,key_path:$key}' > "$STAGE/hy2-tls.json"
-      jq -n --arg server "$SERVER" --rawfile crt "$STAGE/hysteria2.crt" --arg pin "$HY2_PIN" '
-        {enabled:true,server_name:$server,insecure:false,certificate:$crt,
-         certificate_public_key_sha256:[$pin]}' > "$STAGE/hy2-client-tls.json"
-    fi
-    jq -cn --arg pwd "$HY2_PASSWORD" --arg obfs "$HY2_OBFS" \
+    # Keep the DNS credential in a private file/stdin, never in jq's argv or clients.
+    printf '%s' "$CF_API_TOKEN" > "$STAGE/cf-api-token"
+    printf '%s' "$CF_ZONE_TOKEN" > "$STAGE/cf-zone-token"
+    jq -n --arg domain "$HY2_DOMAIN" --arg directory "$ACME_DATA_DIR" --arg email "$ACME_EMAIL" \
+      --rawfile token "$STAGE/cf-api-token" --rawfile zone "$STAGE/cf-zone-token" '
+      {enabled:true,server_name:$domain,certificate_provider:{type:"acme",domain:[$domain],
+       data_directory:$directory,default_server_name:$domain,email:$email,provider:"letsencrypt",
+       key_type:"p256",disable_http_challenge:true,disable_tls_alpn_challenge:true,
+       dns01_challenge:({provider:"cloudflare",api_token:$token} +
+         (if $zone!="" then {zone_token:$zone} else {} end))}}
+    ' > "$STAGE/hy2-tls.json"
+    rm -f "$STAGE/cf-api-token" "$STAGE/cf-zone-token"
+    jq -n --arg domain "$HY2_DOMAIN" '{enabled:true,server_name:$domain,insecure:false}' > "$STAGE/hy2-client-tls.json"
+    jq -cn --arg pwd "$HY2_PASSWORD" \
       --arg obfs_pass "$HY2_OBFS_PASSWORD" --argjson port "$HY2_PORT" \
       --slurpfile tls "$STAGE/hy2-tls.json" '
       {type:"hysteria2",tag:"hy2-in",listen:"0.0.0.0",listen_port:$port,
        users:[{name:"client",password:$pwd}],ignore_client_bandwidth:true,
-       bbr_profile:"standard",tls:$tls[0]} +
-      (if $obfs == "gecko" then {obfs:{type:"gecko",password:$obfs_pass}} else {} end)
+       bbr_profile:"standard",tls:$tls[0],obfs:{type:"gecko",password:$obfs_pass}}
     ' >> "$STAGE/inbounds.jsonl"
 
-    jq -n --arg name "$TAG-hy2" --arg address "$SERVER" --argjson port "$HY2_PORT" \
-      --arg pwd "$HY2_PASSWORD" --arg obfs "$HY2_OBFS" --arg obfs_pass "$HY2_OBFS_PASSWORD" \
+    jq -n --arg name "$TAG-hy2" --arg address "$HY2_DOMAIN" \
+      --arg ports "$HY2_HOP_START:$HY2_HOP_END" --arg interval "$HY2_HOP_INTERVAL" \
+      --arg pwd "$HY2_PASSWORD" --arg obfs_pass "$HY2_OBFS_PASSWORD" \
       --slurpfile tls "$STAGE/hy2-client-tls.json" '
-      {type:"hysteria2",tag:$name,server:$address,server_port:$port,password:$pwd,
-       bbr_profile:"standard",tls:$tls[0]} +
-      (if $obfs == "gecko" then {obfs:{type:"gecko",password:$obfs_pass}} else {} end)
+      {type:"hysteria2",tag:$name,server:$address,server_ports:[$ports],hop_interval:$interval,
+       password:$pwd,bbr_profile:"standard",tls:$tls[0],obfs:{type:"gecko",password:$obfs_pass}}
     ' > "$STAGE/hysteria2-client.json"
   fi
 
   jq -s '{log:{level:"info",timestamp:true},inbounds:.,outbounds:[{type:"direct",tag:"direct"}]}' \
     "$STAGE/inbounds.jsonl" > "$STAGE/config.json"
+
+  cat > "$STAGE/hysteria2-hop.nft" <<EOF
+# Only this table is owned by sing-box. A single nft transaction is repeatable.
+add table inet sing_box_hy2
+flush table inet sing_box_hy2
+table inet sing_box_hy2 {
+  chain prerouting {
+    type nat hook prerouting priority dstnat; policy accept;
+    iifname "$HY2_INTERFACE" udp dport $HY2_HOP_START-$HY2_HOP_END counter redirect to :$HY2_PORT
+  }
+}
+EOF
+  "$NFT_BIN" -c -f "$STAGE/hysteria2-hop.nft" || die 'HY2 port hopping rules could not be validated.'
 
   cat > "$STAGE/sing-box.service" <<EOF
 [Unit]
@@ -492,8 +510,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+ExecStartPre=$NFT_BIN -f $HY2_HOP_FILE
 ExecStartPre=$BIN_FILE check -c $CONFIG_FILE
 ExecStart=$BIN_FILE run -c $CONFIG_FILE
+ExecStopPost=-$NFT_BIN delete table inet sing_box_hy2
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
@@ -507,6 +527,8 @@ EOF
   fi
   if [ "$USE_HY2" -eq 1 ]; then
     jq -e '.type=="hysteria2" and .tls.enabled==true' "$STAGE/hysteria2-client.json" >/dev/null || die 'Invalid Hysteria2 client.'
+    jq '{outbounds:[.]}' "$STAGE/hysteria2-client.json" > "$STAGE/hy2-client-check.json"
+    "$NEW_BIN" check -c "$STAGE/hy2-client-check.json" || die 'Generated HY2 client configuration is invalid.'
   fi
 }
 
@@ -526,18 +548,18 @@ check_socket_conflict() {
 check_ports() {
   [ "$USE_REALITY" -eq 0 ] || check_socket_conflict tcp "$REALITY_PORT"
   [ "$USE_HY2" -eq 0 ] || check_socket_conflict udp "$HY2_PORT"
-  if [ "$USE_HY2" -eq 1 ] && [ "$HY2_CERT" = acme ]; then
-    check_socket_conflict tcp 80
-  fi
+  result=$(ss -H -lunp "( sport >= :$HY2_HOP_START and sport <= :$HY2_HOP_END )" 2>/dev/null | grep -v sing-box || :)
+  [ -z "$result" ] || { warn "$result"; die 'HY2 hopping range overlaps another UDP listener.'; }
 }
 
 backup_old() {
   BACKUP=$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)-$$
   mkdir -p "$BACKUP"
   chmod 700 "$BACKUP"
-  for file in "$CONFIG_FILE" "$REALITY_CLIENT" "$HY2_CLIENT" "$HY2_CERT_FILE" "$HY2_KEY_FILE" "$UNIT_FILE"; do
+  for file in "$CONFIG_FILE" "$REALITY_CLIENT" "$HY2_CLIENT" "$HY2_CERT_FILE" "$HY2_KEY_FILE" "$HY2_HOP_FILE" "$UNIT_FILE"; do
     [ ! -e "$file" ] || cp -p "$file" "$BACKUP/$(basename "$file")"
   done
+  "$NFT_BIN" list table inet sing_box_hy2 > "$BACKUP/hysteria2-hop.table" 2>/dev/null || rm -f "$BACKUP/hysteria2-hop.table"
   if [ "$REPLACE_BINARY" -eq 1 ] && [ -e "$BIN_FILE" ]; then
     cp -p "$BIN_FILE" "$BACKUP/$(basename "$BIN_FILE")"
   fi
@@ -559,7 +581,9 @@ restore_one() {
 rollback() {
   warn 'Deployment failed, restoring previous service and configuration.'
   COMMIT=0
-  for file in "$CONFIG_FILE" "$REALITY_CLIENT" "$HY2_CLIENT" "$HY2_CERT_FILE" "$HY2_KEY_FILE" "$UNIT_FILE"; do
+  systemctl stop sing-box >/dev/null 2>&1 || :
+  "$NFT_BIN" delete table inet sing_box_hy2 >/dev/null 2>&1 || :
+  for file in "$CONFIG_FILE" "$REALITY_CLIENT" "$HY2_CLIENT" "$HY2_CERT_FILE" "$HY2_KEY_FILE" "$HY2_HOP_FILE" "$UNIT_FILE"; do
     restore_one "$file"
   done
   if [ "$REPLACE_BINARY" -eq 1 ]; then restore_one "$BIN_FILE"; fi
@@ -569,6 +593,11 @@ rollback() {
   if [ "$OLD_ACTIVE" -eq 1 ]; then
     systemctl restart sing-box >/dev/null 2>&1 || warn 'Previous sing-box service failed to restart.'
   else systemctl stop sing-box >/dev/null 2>&1 || :; fi
+  # Restore after service hooks have run, including the inactive-service case.
+  if [ -f "$BACKUP/hysteria2-hop.table" ]; then
+    { printf 'add table inet sing_box_hy2\nflush table inet sing_box_hy2\n'; cat "$BACKUP/hysteria2-hop.table"; } |
+      "$NFT_BIN" -f - || warn 'Could not restore previous HY2 hopping rules.'
+  fi
   warn "Backup retained: $BACKUP"
 }
 
@@ -582,6 +611,7 @@ stop_test_client() {
 
 cleanup() {
   code=$1
+  if [ -n "$TTY_STATE" ]; then stty "$TTY_STATE" 2>/dev/null || :; fi
   trap - 0 1 2 3 15
   stop_test_client
   if [ "$COMMIT" -eq 1 ]; then rollback; fi
@@ -600,6 +630,17 @@ start_check_report() {
 }
 
 redact_logs() {
+  # Cloudflare tokens may appear in upstream ACME errors; redact exact values.
+  CF_REDACT_TOKEN=$CF_API_TOKEN CF_REDACT_ZONE=$CF_ZONE_TOKEN awk '
+    BEGIN {a=ENVIRON["CF_REDACT_TOKEN"]; b=ENVIRON["CF_REDACT_ZONE"]}
+    function mask(t,s, out,p) {
+      if(s=="") return t
+      out=""
+      while((p=index(t,s))>0){out=out substr(t,1,p-1) "<CF_TOKEN>"; t=substr(t,p+length(s))}
+      return out t
+    }
+    {print mask(mask($0,a),b)}
+  ' |
   sed -E \
     -e 's/[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}/<UUID>/g' \
     -e 's/[[:xdigit:]]{48,}/<SECRET>/g' \
@@ -667,7 +708,10 @@ read_saved_protocols() {
   fi
   if [ "$USE_HY2" -eq 1 ]; then
     [ -f "$HY2_CLIENT" ] || die 'Hysteria2 outbound JSON is missing.'
-    HY2_PORT=$(jq -er '.server_port' "$HY2_CLIENT")
+    HY2_PORT=$(jq -er '.inbounds[] | select(.type=="hysteria2") | .listen_port' "$CONFIG_FILE")
+    HY2_DOMAIN=$(jq -er '.tls.server_name' "$HY2_CLIENT")
+    CF_API_TOKEN=$(jq -r '.inbounds[] | select(.type=="hysteria2") | .tls.certificate_provider.dns01_challenge.api_token // ""' "$CONFIG_FILE")
+    CF_ZONE_TOKEN=$(jq -r '.inbounds[] | select(.type=="hysteria2") | .tls.certificate_provider.dns01_challenge.zone_token // ""' "$CONFIG_FILE")
   fi
 }
 
@@ -698,25 +742,49 @@ crosscheck() {
     if ! jq -e -n --slurpfile s "$CONFIG_FILE" --slurpfile c "$HY2_CLIENT" '
       ($s[0].inbounds | map(select(.type=="hysteria2")) | .[0]) as $i |
       $c[0] as $o | ($i!=null and $o.type=="hysteria2"
-        and $i.listen_port==$o.server_port
+        and $o.server_ports==["20000:50000"] and $o.server_port==null
+        and $o.hop_interval=="30s"
         and ($i.users|any(.password==$o.password))
         and $i.bbr_profile=="standard" and $o.bbr_profile=="standard"
         and $i.ignore_client_bandwidth==true
         and ($i | has("up_mbps")|not) and ($o | has("up_mbps")|not)
         and ($i.obfs // null)==($o.obfs // null)
+        and $i.obfs.type=="gecko"
+        and $i.tls.certificate_provider.type=="acme"
+        and $i.tls.certificate_provider.dns01_challenge.provider=="cloudflare"
+        and $i.tls.certificate_provider.domain==[$o.server]
+        and $i.tls.server_name==$o.server and $o.tls.server_name==$o.server
         and $i.tls.enabled==true and $o.tls.enabled==true
         and $o.tls.insecure==false)
     ' >/dev/null 2>&1; then
       check_fail 'HY2 server/client password, obfs, BBR, port or TLS mismatch.'
       return 1
     fi
-    check_log "CONFIG CHECK PASS | HY2 UDP/$HY2_PORT"
+    check_log "CONFIG CHECK PASS | HY2 $HY2_DOMAIN, Cloudflare DNS-01, Gecko, UDP 20000-50000 -> $HY2_PORT"
   fi
 }
 
 check_service() {
   CHECK_PHASE=SERVICE
   CHECK_PROTO=SERVICE
+  # DNS-01 may need propagation time on the first start. Wait before declaring
+  # missing listeners a failure; issuance and renewal remain owned by sing-box.
+  waited=0
+  while [ "$waited" -lt 180 ]; do
+    ready=1
+    systemctl is-active --quiet sing-box || ready=0
+    if [ "$USE_REALITY" -eq 1 ]; then
+      ss -H -ltn "sport = :$REALITY_PORT" 2>/dev/null | grep -q LISTEN || ready=0
+    fi
+    if [ "$USE_HY2" -eq 1 ]; then
+      ss -H -lun "sport = :$HY2_PORT" 2>/dev/null | grep -q UNCONN || ready=0
+    fi
+    [ "$ready" -eq 0 ] || break
+    systemctl is-failed --quiet sing-box && break
+    if [ "$((waited % 30))" -eq 0 ]; then check_log "Waiting for sing-box / ACME DNS-01 ($waited/180s)..."; fi
+    sleep 2
+    waited=$((waited + 2))
+  done
   if ! systemctl is-active --quiet sing-box; then
     check_fail 'sing-box service is not active.'
     return 1
@@ -736,6 +804,15 @@ check_service() {
       return 1
     fi
     check_log "SERVICE CHECK PASS | HY2 UDP/$HY2_PORT listening"
+    if ! "$NFT_BIN" -j list table inet sing_box_hy2 | jq -e --argjson port "$HY2_PORT" '
+      [.nftables[] | .rule? | select(.chain=="prerouting") | .expr[]] as $e |
+      any($e[]; .match.left.payload.protocol=="udp" and .match.left.payload.field=="dport"
+        and .match.right.range==[20000,50000]) and any($e[]; .redirect.port==$port)
+    ' >/dev/null 2>&1; then
+      check_fail 'HY2 UDP port hopping rule is missing or inconsistent.'
+      return 1
+    fi
+    check_log 'SERVICE CHECK PASS | HY2 UDP 20000-50000 redirect rule installed'
   fi
 }
 
@@ -758,12 +835,14 @@ build_probe() {
     *) check_fail "Unknown protocol $proto"; return 1 ;;
   esac
   choose_socks_port || return 1
-  # For both protocols only the dial address changes to loopback. The identity
-  # (TLS name/certificate) and credentials remain exactly as exported.
-  if ! jq -n --argjson port "$TEST_SOCKS_PORT" --slurpfile node "$node" '
+  # Loopback bypasses PREROUTING, so the local HY2 protocol check dials the
+  # listener directly. Public hopping is verified separately from this probe.
+  if ! jq -n --arg proto "$proto" --argjson listener "$HY2_PORT" \
+    --argjson port "$TEST_SOCKS_PORT" --slurpfile node "$node" '
     {log:{level:"debug",timestamp:true},
      inbounds:[{type:"socks",tag:"probe-in",listen:"127.0.0.1",listen_port:$port}],
-     outbounds:[($node[0] | .server="127.0.0.1")],
+     outbounds:[($node[0] | .server="127.0.0.1" |
+       if $proto=="HY2" then del(.server_ports,.hop_interval,.hop_interval_max) | .server_port=$listener else . end)],
      route:{final:$node[0].tag}}
   ' > "$STAGE/probe.json" 2> "$STAGE/probe-config.log"; then
     check_fail 'Could not generate temporary sing-box client.'
@@ -864,7 +943,8 @@ print_clients() {
       printf '\n--- Hysteria2 URI ---\n'
       jq -r '
         . as $c | (if ($c.server|contains(":")) then "["+$c.server+"]" else $c.server end) as $host |
-        "hysteria2://\($c.password|@uri)@\($host):\($c.server_port)/?sni=\($c.tls.server_name|@uri)" +
+        (if $c.server_ports then ($c.server_ports|map(gsub(":";"-"))|join(",")) else ($c.server_port|tostring) end) as $ports |
+        "hysteria2://\($c.password|@uri)@\($host):\($ports)/?sni=\($c.tls.server_name|@uri)" +
         (if $c.obfs then "&obfs=\($c.obfs.type|@uri)&obfs-password=\($c.obfs.password|@uri)" else "" end) +
         "#\($c.tag|@uri)"
       ' "$HY2_CLIENT"
@@ -897,16 +977,10 @@ deploy() {
   install -m 600 "$STAGE/config.json" "$CONFIG_FILE"
   install -m 600 "$STAGE/reality-client.json" "$REALITY_CLIENT"
   install -m 600 "$STAGE/hysteria2-client.json" "$HY2_CLIENT"
-  if [ "$HY2_CERT" = self-signed ]; then
-    install -m 600 "$STAGE/hysteria2.crt" "$HY2_CERT_FILE"
-    install -m 600 "$STAGE/hysteria2.key" "$HY2_KEY_FILE"
-  else
-    rm -f "$HY2_CERT_FILE" "$HY2_KEY_FILE"
-  fi
-  if [ "$HY2_CERT" = acme ]; then
-    mkdir -p "$ACME_DATA_DIR"
-    chmod 700 "$ACME_DATA_DIR"
-  fi
+  install -m 600 "$STAGE/hysteria2-hop.nft" "$HY2_HOP_FILE"
+  rm -f "$HY2_CERT_FILE" "$HY2_KEY_FILE"
+  mkdir -p "$ACME_DATA_DIR"
+  chmod 700 "$ACME_DATA_DIR"
   install -m 644 "$STAGE/sing-box.service" "$UNIT_FILE"
   systemctl daemon-reload
   systemctl enable sing-box >/dev/null
@@ -925,7 +999,8 @@ deploy() {
     warn 'CHECK SKIPPED (--skip-test)'
   fi
   COMMIT=0
-  info "Installed: REALITY TCP/$REALITY_PORT + Hysteria2 UDP/$HY2_PORT"
+  info "Installed: REALITY TCP/$REALITY_PORT + HY2 $HY2_DOMAIN (Cloudflare DNS-01, Gecko, UDP 20000-50000 -> $HY2_PORT)"
+  info 'Allow UDP 20000-50000 in the VPS/security-group firewall; use Cloudflare DNS-only.'
   print_clients
 }
 

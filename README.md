@@ -89,3 +89,31 @@ deploy REALITY + Hysteria2 for sing-box (always installs both)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/sing-box-reality-hy2.sh -o sing-box-reality-hy2.sh && sh sing-box-reality-hy2.sh
 ```
+
+HY2 uses a dedicated Cloudflare domain, Let's Encrypt ACME with Cloudflare DNS-01,
+Gecko obfuscation, and UDP port hopping across **20000–50000** (30-second interval).
+The script asks for the domain and a hidden API token. It no longer issues HY2
+certificates for IP addresses or offers self-signed certificates.
+
+For unattended installation, supply `HY2_DOMAIN` and `CF_API_TOKEN` in the environment
+(the existing `CF_Token` variable is also supported), then run:
+
+```sh
+sh sing-box-reality-hy2.sh --yes --hy2-domain hy2.example.com --acme-email you@example.com
+```
+
+Use a token with **Zone:DNS:Edit** and **Zone:Read** scoped to the relevant zone;
+an optional `CF_ZONE_TOKEN` can supply Zone:Read separately. The domain's A record
+must point to the VPS IPv4 address with **DNS-only / grey cloud** enabled. DNS-01
+does not require TCP port 80. Allow UDP **20000–50000** in the host firewall and
+provider security group, plus the configured REALITY TCP port.
+
+The sing-box service loads its own nftables redirect table on start and removes
+it on stop; it leaves other nftables tables intact. Failed deployments restore
+the previous service, configuration and managed hopping rules. Client JSON and
+HY2 URIs include the hopping range and Gecko settings; use a client supporting Gecko.
+Cloudflare tokens remain in the root-only server configuration and never appear
+in exported client profiles.
+
+The default IPv4 route determines the hopping ingress interface. Set `HY2_INTERFACE`
+when public traffic arrives through a different interface.
