@@ -31,6 +31,7 @@ HY2_INTERFACE=${HY2_INTERFACE:-}
 CF_API_TOKEN=${CF_API_TOKEN:-${CF_Token:-}}
 CF_ZONE_TOKEN=${CF_ZONE_TOKEN:-}
 ACME_EMAIL=${ACME_EMAIL:-}
+HY2_CHECK_TIMEOUT=${HY2_CHECK_TIMEOUT:-300}
 readonly HY2_HOP_START=20000 HY2_HOP_END=50000 HY2_HOP_INTERVAL=30s
 NFT_BIN=
 TTY_STATE=
@@ -50,6 +51,7 @@ OLD_ENABLED=0
 REPLACE_BINARY=0
 PROBE_PID=
 TEST_SOCKS_PORT=
+PROBE_DEADLINE=0
 CHECK_PHASE=INIT
 CHECK_PROTO=
 CHECK_REASON=
@@ -92,6 +94,8 @@ Commands:
   status                  Show service status and sockets.
 
 HY2 always uses Cloudflare DNS-01 ACME, Gecko and UDP port hopping 20000-50000.
+HY2 readiness requires authenticated HTTPS; the default deadline is 300 seconds.
+Set HY2_CHECK_TIMEOUT (1-1800 seconds) to change that deadline.
 Set CF_API_TOKEN (or CF_Token); optional CF_ZONE_TOKEN supplies Zone:Read.
 The token needs Zone:DNS:Edit and Zone:Read for the domain's zone.
 Interactive token input is hidden. DNS-01 does not require TCP port 80.
@@ -205,6 +209,7 @@ validate_settings() {
   [ "$USE_HY2" -eq 0 ] || validate_number HY2_PORT "$HY2_PORT" 65535
   validate_number SCAN_LIMIT "$SCAN_LIMIT" 1000
   validate_number SCAN_JOBS "$SCAN_JOBS" 16
+  validate_number HY2_CHECK_TIMEOUT "$HY2_CHECK_TIMEOUT" 1800
   validate_hy2_domain
   [ -n "$CF_API_TOKEN" ] || die 'Set CF_API_TOKEN (or CF_Token) for Cloudflare DNS-01.'
   case "$CF_API_TOKEN$CF_ZONE_TOKEN" in *[!A-Za-z0-9_-]*) die 'Invalid Cloudflare API token format.' ;; esac
@@ -764,8 +769,8 @@ crosscheck() {
 check_service() {
   CHECK_PHASE=SERVICE
   CHECK_PROTO=SERVICE
-  # DNS-01 may need propagation time on the first start. Wait before declaring
-  # missing listeners a failure; issuance and renewal remain owned by sing-box.
+  # Listening is only process readiness. Certificate and protocol readiness are
+  # established by probe_protocol, after this check.
   waited=0
   while [ "$waited" -lt 180 ]; do
     ready=1
@@ -778,7 +783,7 @@ check_service() {
     fi
     [ "$ready" -eq 0 ] || break
     systemctl is-failed --quiet sing-box && break
-    if [ "$((waited % 30))" -eq 0 ]; then check_log "Waiting for sing-box / ACME DNS-01 ($waited/180s)..."; fi
+    if [ "$((waited % 30))" -eq 0 ]; then check_log "Waiting for sing-box listeners ($waited/180s)..."; fi
     sleep 2
     waited=$((waited + 2))
   done
@@ -851,11 +856,25 @@ build_probe() {
   fi
 }
 
+monotonic_seconds() { awk '{printf "%d\n", $1}' /proc/uptime; }
+
 probe_url() {
   label=$1
   url=$2
+  request_budget=26
+  if [ "$PROBE_DEADLINE" -gt 0 ]; then
+    request_remaining=$((PROBE_DEADLINE - $(monotonic_seconds)))
+    if [ "$request_remaining" -le 0 ]; then
+      printf '124\n' > "$STAGE/curl-$label.exit"
+      printf 'Readiness deadline reached.\n' > "$STAGE/curl-$label.log"
+      return 1
+    fi
+    if [ "$request_remaining" -lt "$request_budget" ]; then request_budget=$request_remaining; fi
+  fi
+  request_connect=8
+  if [ "$request_budget" -lt "$request_connect" ]; then request_connect=$request_budget; fi
   if curl -q --fail -sS -v --noproxy '' --proxy "socks5h://127.0.0.1:$TEST_SOCKS_PORT" \
-    --connect-timeout 8 --max-time 26 -o /dev/null \
+    --connect-timeout "$request_connect" --max-time "$request_budget" -o /dev/null \
     -w 'HTTP=%{http_code} TLS_VERIFY=%{ssl_verify_result} TOTAL_SEC=%{time_total}\n' \
     "$url" > "$STAGE/curl-$label.out" 2> "$STAGE/curl-$label.log"; then
     printf '0\n' > "$STAGE/curl-$label.exit"
@@ -872,6 +891,7 @@ start_test_client() {
   PROBE_PID=$!
   count=0
   while [ "$count" -lt 24 ]; do
+    if [ "$PROBE_DEADLINE" -gt 0 ] && [ "$(monotonic_seconds)" -ge "$PROBE_DEADLINE" ]; then break; fi
     if ss -H -ltn "sport = :$TEST_SOCKS_PORT" 2>/dev/null | grep -q LISTEN; then return 0; fi
     kill -0 "$PROBE_PID" 2>/dev/null || break
     sleep 0.25
@@ -884,32 +904,58 @@ start_test_client() {
 probe_protocol() {
   CHECK_PROTO=$1
   CHECK_PHASE=CLIENT
+  probe_limit=52
+  if [ "$1" = HY2 ]; then
+    validate_number HY2_CHECK_TIMEOUT "$HY2_CHECK_TIMEOUT" 1800
+    probe_limit=$(awk -v n="$HY2_CHECK_TIMEOUT" 'BEGIN{printf "%d",n+0}')
+  fi
+  probe_started=$(monotonic_seconds)
+  PROBE_DEADLINE=$((probe_started + probe_limit))
   rm -f "$STAGE"/probe.json "$STAGE"/probe.log "$STAGE"/curl-*.log "$STAGE"/curl-*.out "$STAGE"/curl-*.exit
-  build_probe "$1" || return 1
-  start_test_client || return 1
+  if ! build_probe "$1"; then PROBE_DEADLINE=0; return 1; fi
+  if ! start_test_client; then stop_test_client; PROBE_DEADLINE=0; return 1; fi
   check_log "CLIENT CHECK PASS | $1 local SOCKS initialized"
   CHECK_PHASE=HTTPS
   if [ "$1" = REALITY ]; then
     first_url="https://$SNI/"
   else
     first_url='https://api.ipify.org/'
+    CHECK_PHASE=READINESS
+    check_log "HY2 READINESS WAIT | certificate/TLS/authenticated HTTPS | deadline=${probe_limit}s"
   fi
-  attempts=1
-  if [ "$1" = HY2 ]; then attempts=4; fi
-  attempt=1
-  while [ "$attempt" -le "$attempts" ]; do
+  while :; do
     if probe_url first "$first_url" || probe_url second 'https://www.cloudflare.com/cdn-cgi/trace'; then
       check_log "HTTPS CHECK PASS | $1 | authenticated and proxied request succeeded"
       stop_test_client
+      PROBE_DEADLINE=0
       return 0
     fi
-    [ "$attempt" -ge "$attempts" ] && break
-    check_log "HTTPS CHECK RETRY | $1 ($attempt/$attempts)"
-    sleep 5
-    attempt=$((attempt + 1))
+    [ "$1" = HY2 ] || break
+    probe_now=$(monotonic_seconds)
+    probe_remaining=$((PROBE_DEADLINE - probe_now))
+    [ "$probe_remaining" -gt 0 ] || break
+    if ! systemctl is-active --quiet sing-box; then
+      check_fail 'sing-box stopped while waiting for HY2 certificate/protocol readiness.' || :
+      stop_test_client
+      PROBE_DEADLINE=0
+      return 1
+    fi
+    check_log "HY2 READINESS WAIT | authenticated HTTPS not ready ($((probe_now - probe_started))/${probe_limit}s); ACME may still be issuing the certificate."
+    # A failed QUIC handshake must not leave a cached failure in the next probe.
+    stop_test_client
+    probe_wait=5
+    if [ "$probe_remaining" -lt "$probe_wait" ]; then probe_wait=$probe_remaining; fi
+    sleep "$probe_wait"
+    [ "$(monotonic_seconds)" -lt "$PROBE_DEADLINE" ] || break
+    if ! start_test_client; then stop_test_client; PROBE_DEADLINE=0; return 1; fi
   done
-  check_fail "Real $1 handshake/authentication or HTTPS forwarding failed."
+  if [ "$1" = HY2 ]; then
+    check_fail "HY2 authenticated HTTPS did not become ready within ${probe_limit}s; check ACME certificate/TLS/authentication/forwarding diagnostics." || :
+  else
+    check_fail "Real $1 handshake/authentication or HTTPS forwarding failed." || :
+  fi
   stop_test_client
+  PROBE_DEADLINE=0
   return 1
 }
 
