@@ -16,6 +16,7 @@ BIN_FILE=${BIN_FILE:-/usr/local/bin/sing-box}
 UNIT_FILE=${UNIT_FILE:-/etc/systemd/system/sing-box.service}
 BACKUP_ROOT=${BACKUP_ROOT:-/var/backups/sing-box}
 REPORT_FILE=${REPORT_FILE:-/var/log/sing-box-connection-check.log}
+CF_ENV_FILE=${CF_ENV_FILE:-/etc/profile.d/linkmoon-cloudflare.sh}
 RELEASE_API=${RELEASE_API:-https://api.github.com/repos/SagerNet/sing-box/releases/latest}
 REALITY_LIST_URL=${REALITY_LIST_URL:-https://raw.githubusercontent.com/meower1/Reality-SNI-finder/main/sni.txt}
 
@@ -99,6 +100,8 @@ Set HY2_CHECK_TIMEOUT (1-1800 seconds) to change that deadline.
 Set CF_API_TOKEN (or CF_Token); optional CF_ZONE_TOKEN supplies Zone:Read.
 The token needs Zone:DNS:Edit and Zone:Read for the domain's zone.
 Interactive token input is hidden. DNS-01 does not require TCP port 80.
+Tokens are saved in /etc/profile.d/linkmoon-cloudflare.sh (root-only, mode 600).
+Future deployments load saved tokens; existing environment variables take priority.
 Allow UDP 20000-50000 in the VPS/security-group firewall; keep Cloudflare DNS-only.
 Failed deployment restores the previous configuration and service.
 HELP
@@ -178,6 +181,45 @@ prompt_port() {
   printf '%s\n' "${answer:-$val}"
 }
 
+load_cf_environment() {
+  [ -f "$CF_ENV_FILE" ] || return 0
+  # Read only known assignments as data; never execute a saved environment file.
+  while IFS='=' read -r cf_env_name cf_env_value; do
+    case "$cf_env_name" in
+      'export CF_API_TOKEN') [ -n "$CF_API_TOKEN" ] || CF_API_TOKEN=$cf_env_value ;;
+      'export CF_ZONE_TOKEN') [ -n "$CF_ZONE_TOKEN" ] || CF_ZONE_TOKEN=$cf_env_value ;;
+    esac
+  done < "$CF_ENV_FILE"
+}
+
+validate_cf_tokens() {
+  [ -n "$CF_API_TOKEN" ] || die 'Set CF_API_TOKEN (or CF_Token) for Cloudflare DNS-01.'
+  case "$CF_API_TOKEN$CF_ZONE_TOKEN" in *[!A-Za-z0-9_-]*) die 'Invalid Cloudflare API token format.' ;; esac
+}
+
+save_cf_environment() {
+  validate_cf_tokens
+  CF_Token=$CF_API_TOKEN
+  export CF_API_TOKEN CF_Token CF_ZONE_TOKEN
+  (
+    # Replace one complete file atomically; repeated saves never append duplicates.
+    cf_env_dir=$(dirname "$CF_ENV_FILE")
+    mkdir -p "$cf_env_dir"
+    cf_env_tmp=$(mktemp "$cf_env_dir/.linkmoon-cloudflare.XXXXXX")
+    trap 'rm -f "$cf_env_tmp"' 0
+    trap 'exit 130' 2
+    trap 'exit 143' 15
+    {
+      printf 'export CF_API_TOKEN=%s\n' "$CF_API_TOKEN"
+      printf 'export CF_Token=%s\n' "$CF_API_TOKEN"
+      printf 'export CF_ZONE_TOKEN=%s\n' "$CF_ZONE_TOKEN"
+    } > "$cf_env_tmp"
+    chmod 600 "$cf_env_tmp"
+    mv -f "$cf_env_tmp" "$CF_ENV_FILE"
+  )
+  info 'Cloudflare Token 已保存；下次运行和 root 新登录的终端会自动加载。'
+}
+
 prompt_settings() {
   if [ "$USE_REALITY" -eq 1 ] && [ "$REALITY_PORT_SET" -eq 0 ]; then
     REALITY_PORT=$(prompt_port 'REALITY TCP 端口' "$REALITY_PORT")
@@ -211,8 +253,7 @@ validate_settings() {
   validate_number SCAN_JOBS "$SCAN_JOBS" 16
   validate_number HY2_CHECK_TIMEOUT "$HY2_CHECK_TIMEOUT" 1800
   validate_hy2_domain
-  [ -n "$CF_API_TOKEN" ] || die 'Set CF_API_TOKEN (or CF_Token) for Cloudflare DNS-01.'
-  case "$CF_API_TOKEN$CF_ZONE_TOKEN" in *[!A-Za-z0-9_-]*) die 'Invalid Cloudflare API token format.' ;; esac
+  validate_cf_tokens
   REALITY_PORT=$(awk -v n="$REALITY_PORT" 'BEGIN{printf "%d",n+0}')
   HY2_PORT=$(awk -v n="$HY2_PORT" 'BEGIN{printf "%d",n+0}')
   SCAN_LIMIT=$(awk -v n="$SCAN_LIMIT" 'BEGIN{printf "%d",n+0}')
@@ -1001,8 +1042,10 @@ deploy() {
   USE_HY2=1
   info 'Installing REALITY (TCP) + Hysteria2 (UDP).'
   confirm_reconfiguration
+  load_cf_environment
   prompt_settings
   validate_settings
+  save_cf_environment
   ensure_dependencies
   resolve_server
   STAGE=$(mktemp -d)
