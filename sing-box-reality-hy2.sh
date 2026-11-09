@@ -36,7 +36,7 @@ readonly HY2_HOP_START=20000 HY2_HOP_END=50000 HY2_HOP_INTERVAL=30s
 NFT_BIN=
 TTY_STATE=
 SERVER=
-SNI=
+SNI=speedtest.net
 TAG=
 YES=0
 SKIP_TEST=0
@@ -79,7 +79,7 @@ Every deployment installs both REALITY (TCP) and Hysteria2 (UDP).
   --hy2-domain DOMAIN      Cloudflare DNS-only domain pointing to this VPS; required.
   --acme-email EMAIL       Optional ACME account email.
   --server HOST_OR_IP      REALITY address; default autodetect IPv4.
-  --sni DOMAIN            REALITY SNI; default benchmark the online REALITY list.
+  --sni DOMAIN|auto       REALITY SNI (default speedtest.net); auto benchmarks the online list.
   --tag NAME              Generic client tag; default based on server address.
   --scan-limit N          SNI candidates (default 160).
   --scan-jobs N           Parallel SNI TLS checks (default 8, max 16).
@@ -307,11 +307,11 @@ probe_domain() {
 }
 
 select_sni() {
-  if [ -n "$SNI" ]; then
+  if [ "$SNI" != auto ]; then
     validate_domain "$SNI"
-    info "Using explicit SNI $SNI (checking live TLS 1.3 / HTTP/2 + certificate)."
+    info "Using SNI $SNI (checking live TLS 1.3 / HTTP/2 + certificate)."
     probe_domain "$SNI" "$STAGE/explicit-probe"
-    [ -s "$STAGE/explicit-probe" ] || die "Custom SNI failed TLS 1.3/certificate/HTTP2 check: $SNI"
+    [ -s "$STAGE/explicit-probe" ] || die "SNI failed TLS 1.3/certificate/HTTP2 check: $SNI"
     return 0
   fi
 
