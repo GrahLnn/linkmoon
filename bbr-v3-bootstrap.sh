@@ -28,14 +28,21 @@ die() { printf '[%s] ERROR: %s\n' "$NAME" "$*" >&2; exit 1; }
 require_root() { [[ "${EUID}" -eq 0 ]] || die "run as root"; }
 
 require_supported_os() {
-    [[ -r /etc/os-release ]] || die "cannot identify the operating system"
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    case "${ID:-}" in
-        debian) [[ "${VERSION_ID:-0}" =~ ^([1-9][0-9]*) ]] && (( VERSION_ID >= 12 )) ;;
-        ubuntu) [[ "${VERSION_ID:-0}" == "24.04" || "${VERSION_ID:-0}" > "24.04" ]] ;;
-        *) return 1 ;;
-    esac || die "BBR v3 kernel installation supports Debian 12+ and Ubuntu 24.04+ only"
+    local os_release=/etc/os-release minimum_version ID= VERSION_ID=
+    [[ -e "$os_release" ]] || os_release=/usr/lib/os-release
+    [[ -r "$os_release" ]] || die "cannot identify the operating system"
+    # Import only the OS detection fields to avoid collisions with script variables.
+    # shellcheck source=/dev/null
+    source <(grep -E '^(ID|VERSION_ID)=' "$os_release")
+    case "$ID" in
+        debian) minimum_version=12 ;;
+        ubuntu) minimum_version=24.04 ;;
+        *) minimum_version= ;;
+    esac
+    if [[ -z "$minimum_version" || ! "$VERSION_ID" =~ ^[0-9]+(\.[0-9]+)*$ ]] ||
+        ! dpkg --compare-versions "$VERSION_ID" ge "$minimum_version"; then
+        die "BBR v3 kernel installation supports Debian 12+ and Ubuntu 24.04+ only (detected ${ID:-unknown} ${VERSION_ID:-unknown})"
+    fi
     case "$(uname -m)" in x86_64|aarch64) ;; *) die "unsupported architecture: $(uname -m)" ;; esac
 }
 
@@ -273,6 +280,7 @@ rollback() {
 
 apply() {
     require_supported_os
+    [[ -f "$0" ]] || die "download this script to a regular file before running it (see README)"
     install_dependencies
     copy_self
     if ! has_bbr_v3; then

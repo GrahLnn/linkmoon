@@ -73,9 +73,11 @@ disable ipv6
 bash <(curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/disable_ipv6.sh)
 ```
 
-bbr v3
+BBR v3 (Debian 12+, including Debian 13, or Ubuntu 24.04+)
+
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/bbr-v3-bootstrap.sh)
+curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/bbr-v3-bootstrap.sh -o /root/bbr-v3-bootstrap.sh &&
+    bash /root/bbr-v3-bootstrap.sh
 ```
 
 install 3proxy
