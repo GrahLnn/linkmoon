@@ -76,8 +76,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/disabl
 BBR v3 (Debian 12+, including Debian 13, or Ubuntu 24.04+)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/bbr-v3-bootstrap.sh -o /root/bbr-v3-bootstrap.sh &&
-    bash /root/bbr-v3-bootstrap.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/GrahLnn/linkmoon/main/bbr-v3-bootstrap.sh)
 ```
 
 install 3proxy

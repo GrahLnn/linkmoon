@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
 # Non-interactive VPS bootstrap for the byJoey BBR v3 kernel.
+
+# When started with bash <(...), save the unread installer body before running it.
+if [[ -p "$0" ]]; then
+    set -e
+    staged_script="$(mktemp -t bbr-v3-bootstrap.XXXXXX)"
+    trap 'rm -f -- "$staged_script"' EXIT
+    { printf '#!/usr/bin/env bash\n'; cat -- "$0"; } >"$staged_script"
+    if [[ "$(tail -n 1 -- "$staged_script")" != '# End of BBR v3 bootstrap' ]]; then
+        printf '[bbr-v3-bootstrap] ERROR: incomplete script download\n' >&2
+        exit 1
+    fi
+    bash "$staged_script" "$@"
+    exit
+fi
+
 set -Eeuo pipefail
 
 readonly NAME="bbr-v3-bootstrap"
@@ -280,7 +295,7 @@ rollback() {
 
 apply() {
     require_supported_os
-    [[ -f "$0" ]] || die "download this script to a regular file before running it (see README)"
+    [[ -f "$0" ]] || die "use the Bash process substitution command in the README or run a saved copy of the script"
     install_dependencies
     copy_self
     if ! has_bbr_v3; then
@@ -308,3 +323,4 @@ case "$MODE" in
     rollback) rollback ;;
     *) die "unsupported mode" ;;
 esac
+# End of BBR v3 bootstrap
